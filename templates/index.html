@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Reels Downloader</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Pretendard", sans-serif;
+    background: #0f0f10; color: #e8e8ea;
+    margin: 0; padding: 40px 20px;
+    display: flex; justify-content: center; min-height: 100vh;
+  }
+  .container { width: 100%; max-width: 720px; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 24px; }
+  .sub code { background: #1c1c1f; padding: 2px 6px; border-radius: 4px; color: #c9c9cf; }
+  textarea {
+    width: 100%; min-height: 180px; padding: 14px;
+    background: #1c1c1f; color: #e8e8ea;
+    border: 1px solid #2c2c30; border-radius: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
+    resize: vertical; outline: none;
+  }
+  textarea:focus { border-color: #4a7dff; }
+  .row { display: flex; gap: 10px; margin-top: 12px; align-items: center; }
+  button {
+    background: #4a7dff; color: white; border: 0;
+    padding: 11px 22px; border-radius: 8px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background 0.15s;
+  }
+  button:hover:not(:disabled) { background: #3a6def; }
+  button:disabled { background: #2c2c30; color: #666; cursor: not-allowed; }
+  .count { color: #888; font-size: 13px; }
+  .results { margin-top: 24px; display: flex; flex-direction: column; gap: 8px; }
+  .item {
+    background: #1c1c1f; border: 1px solid #2c2c30; border-radius: 8px;
+    padding: 12px 14px; display: flex; align-items: center; gap: 12px;
+    font-size: 13px;
+  }
+  .item.ok { border-left: 3px solid #2ecc71; }
+  .item.err { border-left: 3px solid #e74c3c; }
+  .item.pending { border-left: 3px solid #f39c12; }
+  .icon { font-size: 16px; flex-shrink: 0; }
+  .item-body { flex: 1; min-width: 0; }
+  .item-url { color: #888; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item-title { color: #e8e8ea; margin-bottom: 2px; }
+  .item-err { color: #ff8a80; }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid #2c2c30;
+    border-top-color: #4a7dff; border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .summary {
+    margin-top: 16px; padding: 12px 14px;
+    background: #16161a; border-radius: 8px; font-size: 13px; color: #aaa;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>📥 Instagram Reels Downloader</h1>
+    <p class="sub">저장 위치: <code>{{ download_dir }}</code></p>
+
+    <textarea id="urls" placeholder="인스타그램 릴스 URL을 입력하세요 (여러 개는 줄바꿈)&#10;&#10;https://www.instagram.com/reel/XXXXXX/&#10;https://www.instagram.com/reel/YYYYYY/"></textarea>
+
+    <div class="row">
+      <button id="go">다운로드</button>
+      <label class="count" style="display:flex;align-items:center;gap:6px;">
+        쿠키:
+        <select id="browser" style="background:#1c1c1f;color:#e8e8ea;border:1px solid #2c2c30;border-radius:6px;padding:6px 8px;font-size:13px;">
+          <option value="">사용 안 함</option>
+          <option value="chrome" selected>Chrome</option>
+          <option value="safari">Safari</option>
+          <option value="firefox">Firefox</option>
+          <option value="edge">Edge</option>
+          <option value="brave">Brave</option>
+        </select>
+      </label>
+      <span class="count" id="count">0개 URL</span>
+    </div>
+
+    <div class="results" id="results"></div>
+    <div class="summary" id="summary" style="display:none;"></div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const urlsEl = $("urls"), goBtn = $("go"), countEl = $("count");
+const resultsEl = $("results"), summaryEl = $("summary");
+
+const URL_RE = /https?:\/\/[^\s]+/gi;
+function extractUrls(text) {
+  const seen = new Set(), out = [];
+  for (const m of text.matchAll(URL_RE)) {
+    const u = m[0].replace(/[).,;"']+$/, "");
+    if (!seen.has(u)) { seen.add(u); out.push(u); }
+  }
+  return out;
+}
+
+urlsEl.addEventListener("input", () => {
+  countEl.textContent = `${extractUrls(urlsEl.value).length}개 URL`;
+});
+
+goBtn.addEventListener("click", async () => {
+  const urls = extractUrls(urlsEl.value);
+  if (!urls.length) { alert("URL을 입력하세요."); return; }
+
+  goBtn.disabled = true;
+  resultsEl.innerHTML = "";
+  summaryEl.style.display = "none";
+
+  const items = urls.map((url, i) => {
+    const el = document.createElement("div");
+    el.className = "item pending";
+    el.id = `item-${i + 1}`;
+    el.innerHTML = `
+      <div class="spinner"></div>
+      <div class="item-body">
+        <div class="item-title">대기 중…</div>
+        <div class="item-url">${escapeHtml(url)}</div>
+      </div>`;
+    resultsEl.appendChild(el);
+    return el;
+  });
+
+  let ok = 0, fail = 0;
+  try {
+    const browser = document.getElementById("browser").value;
+    const res = await fetch("/api/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls, browser }),
+    });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.event === "progress") {
+          const el = items[ev.index - 1];
+          const label = ev.stage === "transcode"
+            ? "H.264로 변환 중…"
+            : "다운로드 중…";
+          el.querySelector(".item-title").textContent = label;
+        } else if (ev.event === "result") {
+          const el = items[ev.index - 1];
+          if (ev.ok) {
+            ok++;
+            el.className = "item ok";
+            const badge = ev.transcoded
+              ? ` <span style="color:#888;font-size:11px;">(${escapeHtml(ev.codec_original || "")} → h264)</span>`
+              : "";
+            el.innerHTML = `
+              <div class="icon">✅</div>
+              <div class="item-body">
+                <div class="item-title">${escapeHtml(ev.filename)}${badge}</div>
+                <div class="item-url">${escapeHtml(ev.uploader ? ev.uploader + " · " : "")}${escapeHtml(ev.url)}</div>
+              </div>`;
+          } else {
+            fail++;
+            el.className = "item err";
+            el.innerHTML = `
+              <div class="icon">❌</div>
+              <div class="item-body">
+                <div class="item-title item-err">${escapeHtml(ev.error || "실패")}</div>
+                <div class="item-url">${escapeHtml(ev.url)}</div>
+              </div>`;
+          }
+        }
+      }
+    }
+    summaryEl.style.display = "block";
+    summaryEl.textContent = `완료 — 성공 ${ok}개, 실패 ${fail}개`;
+  } catch (e) {
+    summaryEl.style.display = "block";
+    summaryEl.textContent = `오류: ${e.message}`;
+  } finally {
+    goBtn.disabled = false;
+  }
+});
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+</script>
+</body>
+</html>
